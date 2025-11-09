@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Allow cleartext (HTTP) traffic for API connections -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    
+    <!-- Allow cleartext traffic for specific domains if needed -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">134.122.79.166</domain>
+        <domain includeSubdomains="true">207.154.252.226</domain>
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>
+

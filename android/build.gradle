@@ -4,17 +4,39 @@ buildscript {
         minSdkVersion = 24
         compileSdkVersion = 36
         targetSdkVersion = 36
-        ndkVersion = "27.1.12297006"
+        ndkVersion = "27.2.12479018"
         kotlinVersion = "2.1.20"
+        
+        // Document Picker overrides - use SDK 36
+        DocumentPicker_compileSdkVersion = 36
+        DocumentPicker_buildToolsVersion = "36.0.0"
+        DocumentPicker_minSdkVersion = 24
+        DocumentPicker_targetSdkVersion = 36
+        
+        // Camera Kit overrides - use SDK 36
+        CameraKit_compileSdkVersion = 36
+        CameraKit_buildToolsVersion = "36.0.0"
+        CameraKit_minSdkVersion = 24
+        CameraKit_targetSdkVersion = 36
+        
+        // VisionCamera overrides - use SDK 36
+        VisionCamera_compileSdkVersion = 36
+        VisionCamera_targetSdkVersion = 36
+        VisionCamera_minSdkVersion = 24
+        
+        // VisionCamera CodeScanner overrides - use SDK 36
+        VisionCameraCodeScanner_compileSdkVersion = 36
+        VisionCameraCodeScanner_targetSdkVersion = 36
+        VisionCameraCodeScanner_minSdkVersion = 24
     }
     repositories {
         google()
         mavenCentral()
     }
     dependencies {
-        classpath("com.android.tools.build:gradle")
+        classpath("com.android.tools.build:gradle:8.1.1")
         classpath("com.facebook.react:react-native-gradle-plugin")
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlinVersion")
     }
 }
 
