@@ -17,6 +17,7 @@ import {
   ScrollView,
 } from 'react-native';
 import WalletStorage from '../services/WalletStorage';
+import Falcon from '../FalconCrypto';
 
 interface UnlockScreenProps {
   onUnlock: () => void;
@@ -100,19 +101,32 @@ export default function UnlockScreen({ onUnlock, navigation }: UnlockScreenProps
 
   const verifyPassword = async (wallet: any, password: string): Promise<boolean> => {
     try {
-      // Simple verification - in production, you would actually try to decrypt
-      // For now, we'll store the password hash with the wallet
-      // This is a placeholder - actual AES decryption will validate the password
-      
-      // Check if wallet has stored password hash
-      if (wallet.password_hash) {
-        return wallet.password_hash === password;
+      // Check if wallet is encrypted
+      if (!wallet.encrypted || !wallet.private_key_encrypted) {
+        // Wallet is not encrypted, no password needed
+        console.log('Wallet is not encrypted, allowing access');
+        return true;
       }
+
+      // Verify password by attempting to decrypt the private key using Rust backend
+      // This is the ONLY secure way to verify the password
+      console.log('Verifying password by attempting to decrypt private key...');
+      const walletJson = JSON.stringify(wallet);
+      const verifyResult = await Falcon.verifyWalletPassword(walletJson, password);
       
-      // If no password hash stored (old wallet), accept any password for now
-      // In production, you would try to decrypt the private_key_encrypted
-      return true;
+      if (verifyResult.error) {
+        console.error('Password verification error:', verifyResult.error);
+        return false;
+      }
+
+      // verifyResult.valid is true only if password successfully decrypts the private key
+      const isValid = verifyResult.valid === true;
+      console.log('Password verification result:', isValid ? '✅ Valid' : '❌ Invalid');
+      
+      return isValid;
     } catch (error) {
+      console.error('Error verifying password:', error);
+      // On any error, reject the password for security
       return false;
     }
   };

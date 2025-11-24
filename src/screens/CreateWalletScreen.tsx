@@ -44,17 +44,17 @@ export default function CreateWalletScreen({ navigation }: CreateWalletScreenPro
       Alert.alert('Error', 'Please enter a wallet name');
       return;
     }
-    
+
     if (!password) {
       Alert.alert('Error', 'Please enter a password');
       return;
     }
-    
+
     if (password.length < 8) {
       Alert.alert('Error', 'Password must be at least 8 characters');
       return;
     }
-    
+
     if (password !== confirmPassword) {
       Alert.alert('Error', 'Passwords do not match');
       return;
@@ -81,6 +81,9 @@ export default function CreateWalletScreen({ navigation }: CreateWalletScreenPro
 
       // Save wallet to storage
       await WalletStorage.saveWallet(walletData);
+
+      // Set as active wallet
+      await WalletStorage.setActiveWallet(walletData.address);
 
       Alert.alert(
         '✅ Wallet Created!',

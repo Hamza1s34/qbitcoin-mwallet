@@ -3,7 +3,8 @@
  * Main wallet screen showing balance and recent transactions
  */
 
-import React, { useState, useEffect } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
+import React, { useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -23,6 +24,7 @@ import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import ReactNativeBlobUtil from 'react-native-blob-util';
 import QbitcoinAPI from '../services/QbitcoinAPI';
 import WalletStorage from '../services/WalletStorage';
+import NodeStorage from '../services/NodeStorage';
 
 type RootStackParamList = {
   Welcome: undefined;
@@ -57,22 +59,38 @@ export default function DashboardScreen({ navigation }: DashboardScreenProps) {
   const [menuVisible, setMenuVisible] = useState(false);
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [walletSwitcherVisible, setWalletSwitcherVisible] = useState(false);
-  const [customNode, setCustomNode] = useState('http://207.154.252.226:18090');
   const [nodeStats, setNodeStats] = useState<any>(null);
   const [wallets, setWallets] = useState<any[]>([]);
+  const [nodeConnecting, setNodeConnecting] = useState(false);
+  const [nodeConnected, setNodeConnected] = useState(false);
+  const [allNodeStatuses, setAllNodeStatuses] = useState<any[]>([]);
+  const [nodes, setNodes] = useState<string[]>([]);
+  const [newNodeUrl, setNewNodeUrl] = useState('');
 
-  useEffect(() => {
-    loadWalletData();
-  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      loadWalletData();
+      loadNodes();
+      fetchNodeStats(); // Check node connection on load
+    }, [])
+  );
+
+  const loadNodes = async () => {
+    const nodeList = await NodeStorage.getAllNodes();
+    setNodes(nodeList);
+  };
 
   const loadWalletData = async () => {
     try {
       const wallet = await WalletStorage.getActiveWallet();
       if (wallet) {
+        // Reset state first to avoid showing old wallet data
+        setBalance('0.0000');
+        setTransactions([]);
         setAddress(wallet.address);
         setWalletName(wallet.name);
         setLoading(false); // Show UI immediately after loading wallet
-        
+
         // Fetch balance and transactions in parallel (non-blocking)
         Promise.all([
           fetchBalance(wallet.address),
@@ -117,15 +135,15 @@ export default function DashboardScreen({ navigation }: DashboardScreenProps) {
               // Find the wallet by name to get its address
               const allWallets = await WalletStorage.getAllWallets();
               const walletToDelete = allWallets.find(w => w.name === walletName);
-              
+
               if (!walletToDelete) {
                 Alert.alert('Error', 'Wallet not found');
                 return;
               }
-              
+
               await WalletStorage.deleteWallet(walletToDelete.address);
               const remaining = await WalletStorage.getAllWallets();
-              
+
               if (remaining.length === 0) {
                 // No wallets left, go to welcome screen
                 navigation.navigate('Welcome');
@@ -137,7 +155,7 @@ export default function DashboardScreen({ navigation }: DashboardScreenProps) {
                 // Just refresh the wallet list
                 loadWallets();
               }
-              
+
               Alert.alert('Success', 'Wallet deleted successfully');
             } catch (error) {
               console.error('Error deleting wallet:', error);
@@ -150,31 +168,149 @@ export default function DashboardScreen({ navigation }: DashboardScreenProps) {
   };
 
   const fetchNodeStats = async () => {
+    setNodeConnecting(true);
     try {
-      const result = await QbitcoinAPI.getNodeState();
-      console.log('Node state result:', result);
-      
-      if (result && result.info) {
-        const stats = {
-          height: result.info.blockHeight || '0',
-          connected: result.info.state === 'SYNCED',
-          peers: result.info.numConnections || 0,
-          version: result.info.version || 'Unknown'
-        };
-        setNodeStats(stats);
+      // Get node statuses quickly (non-blocking)
+      const statuses = await QbitcoinAPI.getAllNodeStatuses(true);
+      setAllNodeStatuses(statuses);
+
+      // Find best connected node
+      const connectedNodes = statuses.filter(s => s.connected);
+      const bestNode = connectedNodes.length > 0
+        ? connectedNodes.reduce((best, current) =>
+          current.height > best.height ? current : best
+        )
+        : null;
+
+      if (bestNode) {
+        setNodeConnected(true);
+        setNodeStats({
+          height: bestNode.height,
+          connected: true,
+          state: bestNode.state || 'CONNECTED',
+          bestNodeUrl: bestNode.url,
+          totalNodes: statuses.length,
+          connectedNodes: connectedNodes.length,
+        });
+      } else {
+        // Even if no nodes fully connected, we might still get data
+        // Don't block the UI
+        setNodeConnected(false);
+        setNodeStats({
+          connected: false,
+          state: 'CONNECTING',
+          totalNodes: statuses.length,
+          connectedNodes: 0,
+        });
       }
     } catch (error) {
       console.error('Error fetching node stats:', error);
+      // Don't show as disconnected, show as connecting
+      setNodeConnected(false);
+      setNodeStats({
+        connected: false,
+        state: 'CONNECTING',
+      });
+    } finally {
+      setNodeConnecting(false);
     }
   };
 
-    const handleBackupWallet = async () => {
+  const handleAddNode = async () => {
+    if (!newNodeUrl.trim()) {
+      Alert.alert('Error', 'Please enter a node IP address');
+      return;
+    }
+
+    try {
+      const input = newNodeUrl.trim();
+      let nodeUrl: string;
+
+      // Check if input contains port (format: ip:port)
+      if (input.includes(':')) {
+        const parts = input.split(':');
+        if (parts.length !== 2) {
+          Alert.alert('Error', 'Invalid format. Use IP:PORT (e.g., 192.168.1.1:18090)');
+          return;
+        }
+        const ip = parts[0].trim();
+        const port = parts[1].trim();
+
+        // Validate IP format (basic check)
+        if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
+          Alert.alert('Error', 'Invalid IP address format');
+          return;
+        }
+
+        // Validate port
+        const portNum = parseInt(port);
+        if (isNaN(portNum) || portNum < 1 || portNum > 65535) {
+          Alert.alert('Error', 'Invalid port number (must be 1-65535)');
+          return;
+        }
+
+        nodeUrl = `http://${ip}:${port}`;
+      } else {
+        // Only IP provided, use default port 18090
+        // Validate IP format
+        if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(input)) {
+          Alert.alert('Error', 'Invalid IP address format');
+          return;
+        }
+
+        nodeUrl = `http://${input}:18090`;
+      }
+
+      // Check if node already exists
+      const existingNodes = await NodeStorage.getAllNodes();
+      if (existingNodes.includes(nodeUrl)) {
+        Alert.alert('Error', 'This node is already added');
+        return;
+      }
+
+      await NodeStorage.addNode(nodeUrl);
+      setNewNodeUrl('');
+      await loadNodes();
+      await fetchNodeStats();
+      Alert.alert('Success', `Node added successfully:\n${nodeUrl}`);
+    } catch (error) {
+      console.error('Error adding node:', error);
+      Alert.alert('Error', 'Failed to add node');
+    }
+  };
+
+  const handleRemoveNode = async (nodeUrl: string) => {
+    Alert.alert(
+      'Remove Node',
+      `Are you sure you want to remove this node?\n\n${nodeUrl}`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await NodeStorage.removeNode(nodeUrl);
+              await loadNodes();
+              await fetchNodeStats();
+              Alert.alert('Success', 'Node removed successfully');
+            } catch (error) {
+              console.error('Error removing node:', error);
+              Alert.alert('Error', 'Failed to remove node');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleBackupWallet = async () => {
     try {
       setLoading(true);
 
       // Get the active wallet first
       const activeWallet = await WalletStorage.getActiveWallet();
-      
+
       if (!activeWallet) {
         Alert.alert('Error', 'No active wallet found');
         setLoading(false);
@@ -210,14 +346,14 @@ export default function DashboardScreen({ navigation }: DashboardScreenProps) {
       // Verify file was created
       const fileExists = await ReactNativeBlobUtil.fs.exists(filePath);
       console.log('File exists after write:', fileExists);
-      
+
       if (fileExists) {
         const fileStats = await ReactNativeBlobUtil.fs.stat(filePath);
         console.log('File stats:', fileStats);
       }
 
       // Format path for display (wrap long paths)
-      const displayPath = filePath.length > 60 
+      const displayPath = filePath.length > 60
         ? `${filePath.substring(0, 60)}...\n${filePath.substring(60)}`
         : filePath;
 
@@ -277,25 +413,26 @@ ${wallet.public_key}
 
   const fetchBalance = async (addr: string) => {
     try {
-      // Add timeout to prevent hanging
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Timeout')), 5000)
-      );
-      
-      const result = await Promise.race([
-        QbitcoinAPI.getBalance(addr),
-        timeoutPromise
-      ]) as any;
-      
-      if (result && result.balance) {
+      // Don't use timeout here as the API already handles it
+      const result = await QbitcoinAPI.getBalance(addr) as any;
+
+      if (result && result.balance !== undefined) {
         // Convert from shor to QBC (1 QBC = 1,000,000,000 shor)
         const balanceQBC = (parseInt(result.balance) / 1000000000).toFixed(4);
         setBalance(balanceQBC);
+      } else if (result && result.error) {
+        console.log('Balance fetch error:', result.error);
+        // Don't reset to 0, keep previous balance if it's a temporary error
+        if (balance === null || balance === '-.----') {
+          setBalance('0.0000'); // Show zero if still no data
+        }
       }
     } catch (error) {
       console.error('Error fetching balance:', error);
-      // Set default balance on error
-      setBalance('0.0000');
+      // Don't reset to 0, keep previous balance if available
+      if (balance === null || balance === '-.----') {
+        setBalance('0.0000'); // Show zero if error persists
+      }
     }
   };
 
@@ -303,31 +440,24 @@ ${wallet.public_key}
     try {
       // Convert wallet address to base64 for comparison (API uses base64)
       const walletAddressBase64 = Buffer.from(addr.substring(1), 'hex').toString('base64');
-      
-      // Add timeout to prevent hanging
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Timeout')), 10000)
-      );
-      
-      const result = await Promise.race([
-        QbitcoinAPI.getTransactionsByAddress(addr, 4, 1),
-        timeoutPromise
-      ]) as any;
-      
+
+      // Don't use timeout here as the API already handles it
+      const result = await QbitcoinAPI.getTransactionsByAddress(addr, 4, 1);
+
       console.log('Dashboard transaction result:', result);
-      
+
       // API returns transactionsDetail array
       if (result && result.transactionsDetail && Array.isArray(result.transactionsDetail)) {
         // Transform API data to match our UI format
         const formattedTxs = result.transactionsDetail.slice(0, 4).map((txDetail: any) => {
           const tx = txDetail.tx;
-          
+
           // Check if this is a sent or received transaction
           const isSent = txDetail.addrFrom === walletAddressBase64 || tx.masterAddr === walletAddressBase64;
-          
+
           let amount = '0';
           let fee = tx.fee || '0';
-          
+
           if (isSent) {
             // For sent transactions, calculate total sent amount
             if (tx.transfer && tx.transfer.amounts && tx.transfer.amounts.length > 0) {
@@ -349,7 +479,7 @@ ${wallet.public_key}
               }
             }
           }
-          
+
           // Convert transaction hash from base64 to hex for display
           let txHash = tx.transactionHash || txDetail.blockHeaderHash;
           if (txHash) {
@@ -361,7 +491,7 @@ ${wallet.public_key}
               console.log('Error converting hash:', e);
             }
           }
-          
+
           return {
             tx_hash: txHash,
             amount: amount,
@@ -370,7 +500,7 @@ ${wallet.public_key}
             confirmations: parseInt(txDetail.confirmations || '0'),
           };
         });
-        
+
         setTransactions(formattedTxs);
       } else {
         setTransactions([]);
@@ -385,6 +515,7 @@ ${wallet.public_key}
   const onRefresh = () => {
     setRefreshing(true);
     loadWalletData();
+    fetchNodeStats(); // Also refresh node connection status
   };
 
   if (loading) {
@@ -401,6 +532,54 @@ ${wallet.public_key}
       refreshControl={
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
       }>
+      {/* Node Connection Status Bar */}
+      <View style={[
+        styles.nodeStatusBar,
+        isDarkMode && styles.nodeStatusBarDark,
+        nodeConnected
+          ? (isDarkMode ? styles.nodeStatusBarConnectedDark : styles.nodeStatusBarConnected)
+          : (isDarkMode ? styles.nodeStatusBarDisconnectedDark : styles.nodeStatusBarDisconnected)
+      ]}>
+        <View style={styles.nodeStatusContent}>
+          <View style={styles.nodeStatusLeft}>
+            <View style={[
+              styles.nodeStatusIndicator,
+              nodeConnected ? styles.nodeStatusIndicatorConnected : styles.nodeStatusIndicatorDisconnected,
+              nodeConnecting && styles.nodeStatusIndicatorConnecting
+            ]}>
+              {nodeConnecting ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Text style={styles.nodeStatusDot}>
+                  {nodeConnected ? '🟢' : '🔴'}
+                </Text>
+              )}
+            </View>
+            <View style={styles.nodeStatusText}>
+              <Text style={[styles.nodeStatusTitle, isDarkMode && styles.nodeStatusTitleDark]}>
+                {nodeConnecting ? 'Connecting to Node...' : nodeConnected ? 'Wallet Connected to Node' : 'Wallet Not Connected'}
+              </Text>
+              {nodeStats && (
+                <Text style={[styles.nodeStatusSubtitle, isDarkMode && styles.nodeStatusSubtitleDark]}>
+                  {nodeConnected
+                    ? `${nodeStats.connectedNodes || 0} of ${nodeStats.totalNodes || 0} nodes connected${nodeStats.height ? ` | Height: ${nodeStats.height}` : ''}`
+                    : `0 of ${nodeStats.totalNodes || 0} nodes connected`
+                  }
+                </Text>
+              )}
+            </View>
+          </View>
+          <TouchableOpacity
+            style={[styles.nodeRefreshButton, isDarkMode && styles.nodeRefreshButtonDark]}
+            onPress={fetchNodeStats}
+            disabled={nodeConnecting}>
+            <Text style={styles.nodeRefreshButtonText}>
+              {nodeConnecting ? '⏳' : '🔄'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
       {/* Header */}
       <View style={styles.header}>
         <View>
@@ -411,7 +590,7 @@ ${wallet.public_key}
             {address.substring(0, 12)}...{address.substring(address.length - 8)}
           </Text>
         </View>
-        <TouchableOpacity 
+        <TouchableOpacity
           style={styles.menuButton}
           onPress={() => setMenuVisible(true)}>
           <Text style={[styles.menuDots, isDarkMode && styles.menuDotsDark]}>⋮</Text>
@@ -424,12 +603,12 @@ ${wallet.public_key}
         transparent={true}
         animationType="fade"
         onRequestClose={() => setMenuVisible(false)}>
-        <TouchableOpacity 
+        <TouchableOpacity
           style={styles.modalOverlay}
           activeOpacity={1}
           onPress={() => setMenuVisible(false)}>
           <View style={[styles.menuDropdown, isDarkMode && styles.menuDropdownDark]}>
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.menuItem}
               onPress={() => {
                 setMenuVisible(false);
@@ -441,7 +620,7 @@ ${wallet.public_key}
                 Switch Wallet
               </Text>
             </TouchableOpacity>
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.menuItem}
               onPress={() => {
                 setMenuVisible(false);
@@ -471,14 +650,14 @@ ${wallet.public_key}
               <Text style={[styles.closeButton, isDarkMode && styles.closeButtonDark]}>✕</Text>
             </TouchableOpacity>
           </View>
-          
+
           <ScrollView style={styles.modalContent}>
             {/* Backup & Export Section */}
             <View style={[styles.settingSection, isDarkMode && styles.settingSectionDark]}>
               <Text style={[styles.settingSectionTitle, isDarkMode && styles.settingSectionTitleDark]}>
                 Backup & Export
               </Text>
-              
+
               <TouchableOpacity
                 style={[styles.backupButton, isDarkMode && styles.backupButtonDark]}
                 onPress={handleBackupWallet}>
@@ -511,64 +690,171 @@ ${wallet.public_key}
             {/* Network Settings */}
             <View style={[styles.settingSection, isDarkMode && styles.settingSectionDark]}>
               <Text style={[styles.settingSectionTitle, isDarkMode && styles.settingSectionTitleDark]}>
-                Network
+                Network Nodes
               </Text>
+
+              {/* Add New Node */}
               <Text style={[styles.settingLabel, isDarkMode && styles.settingLabelDark]}>
-                Custom Node
+                Add Node
               </Text>
-              <TextInput
-                style={[styles.settingInput, isDarkMode && styles.settingInputDark]}
-                value={customNode}
-                onChangeText={setCustomNode}
-                placeholder="http://your-node-ip:18090"
-                placeholderTextColor={isDarkMode ? '#546e7a' : '#90a4ae'}
-              />
-              <TouchableOpacity 
-                style={styles.saveButton}
-                onPress={() => {
-                  Alert.alert('Success', 'Node settings saved');
-                  setSettingsVisible(false);
-                }}>
-                <Text style={styles.saveButtonText}>Save Node</Text>
+              <Text style={[styles.settingHint, isDarkMode && styles.settingHintDark]}>
+                Enter IP address (e.g., 192.168.1.1) or IP:PORT (e.g., 192.168.1.1:18090)
+              </Text>
+              <View style={styles.addNodeContainer}>
+                <TextInput
+                  style={[styles.settingInput, styles.addNodeInput, isDarkMode && styles.settingInputDark]}
+                  value={newNodeUrl}
+                  onChangeText={setNewNodeUrl}
+                  placeholder="192.168.1.1 or 192.168.1.1:18090"
+                  placeholderTextColor={isDarkMode ? '#546e7a' : '#90a4ae'}
+                  keyboardType="default"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                <TouchableOpacity
+                  style={styles.addNodeButton}
+                  onPress={handleAddNode}>
+                  <Text style={styles.addNodeButtonText}>+ Add</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Node List */}
+              <Text style={[styles.settingLabel, isDarkMode && styles.settingLabelDark, { marginTop: 16 }]}>
+                Connected Nodes ({allNodeStatuses.filter(s => s.connected).length}/{allNodeStatuses.length})
+              </Text>
+
+              {allNodeStatuses.length === 0 ? (
+                <Text style={[styles.nodeStatusText, isDarkMode && styles.nodeStatusTextDark]}>
+                  No nodes configured
+                </Text>
+              ) : (
+                allNodeStatuses.map((nodeStatus, index) => {
+                  const isConnected = nodeStatus.connected;
+                  const isBest = nodeStats?.bestNodeUrl === nodeStatus.url;
+
+                  return (
+                    <View
+                      key={index}
+                      style={[
+                        styles.nodeItem,
+                        isDarkMode && styles.nodeItemDark,
+                        isConnected && styles.nodeItemConnected,
+                        isBest && styles.nodeItemBest
+                      ]}>
+                      <View style={styles.nodeItemContent}>
+                        <View style={styles.nodeItemLeft}>
+                          <View style={[
+                            styles.nodeItemIndicator,
+                            isConnected ? styles.nodeItemIndicatorConnected : styles.nodeItemIndicatorDisconnected
+                          ]}>
+                            <Text style={styles.nodeItemDot}>
+                              {isConnected ? '🟢' : '🔴'}
+                            </Text>
+                          </View>
+                          <View style={styles.nodeItemInfo}>
+                            <Text style={[styles.nodeItemUrl, isDarkMode && styles.nodeItemUrlDark]}>
+                              {nodeStatus.url}
+                            </Text>
+                            <Text style={[styles.nodeItemStatus, isDarkMode && styles.nodeItemStatusDark]}>
+                              {isConnected
+                                ? `Height: ${nodeStatus.height} | ${nodeStatus.state || 'SYNCED'}`
+                                : 'Not Connected'
+                              }
+                              {isBest && ' ⭐ Best'}
+                            </Text>
+                          </View>
+                        </View>
+                        <TouchableOpacity
+                          style={styles.removeNodeButton}
+                          onPress={() => handleRemoveNode(nodeStatus.url)}>
+                          <Text style={styles.removeNodeButtonText}>✕</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  );
+                })
+              )}
+
+              <TouchableOpacity
+                style={[styles.saveButton, { marginTop: 16 }]}
+                onPress={fetchNodeStats}>
+                <Text style={styles.saveButtonText}>🔄 Refresh All Nodes</Text>
               </TouchableOpacity>
             </View>
 
-            {/* Node Stats */}
+            {/* Node Stats - Show All Connected Nodes */}
             <View style={[styles.statsCard, isDarkMode && styles.statsCardDark]}>
               <Text style={[styles.statsTitle, isDarkMode && styles.statsTitleDark]}>
-                Node Statistics
+                All Node Statistics
               </Text>
-              {nodeStats ? (
-                <>
-                  <View style={styles.statRow}>
-                    <Text style={[styles.statLabel, isDarkMode && styles.statLabelDark]}>
-                      Block Height:
-                    </Text>
-                    <Text style={[styles.statValue, isDarkMode && styles.statValueDark]}>
-                      {nodeStats.height}
-                    </Text>
-                  </View>
-                  <View style={styles.statRow}>
-                    <Text style={[styles.statLabel, isDarkMode && styles.statLabelDark]}>
-                      Peers:
-                    </Text>
-                    <Text style={[styles.statValue, isDarkMode && styles.statValueDark]}>
-                      {nodeStats.peers}
-                    </Text>
-                  </View>
-                  <View style={styles.statRow}>
-                    <Text style={[styles.statLabel, isDarkMode && styles.statLabelDark]}>
-                      Status:
-                    </Text>
-                    <Text style={[styles.statValue, styles.statusConnected]}>
-                      {nodeStats.connected ? '🟢 Connected' : '🔴 Disconnected'}
-                    </Text>
-                  </View>
-                </>
-              ) : (
+              {allNodeStatuses.length === 0 ? (
                 <Text style={[styles.statLabel, isDarkMode && styles.statLabelDark]}>
-                  Loading stats...
+                  No nodes configured. Please add nodes above.
                 </Text>
+              ) : (
+                allNodeStatuses.map((nodeStatus, index) => {
+                  const isConnected = nodeStatus.connected;
+                  const isBest = nodeStats?.bestNodeUrl === nodeStatus.url;
+
+                  return (
+                    <View key={index} style={[
+                      styles.nodeStatCard,
+                      isDarkMode && styles.nodeStatCardDark,
+                      index < allNodeStatuses.length - 1 && styles.nodeStatCardBorder
+                    ]}>
+                      <View style={styles.nodeStatHeader}>
+                        <View style={styles.nodeStatHeaderLeft}>
+                          <View style={[
+                            styles.nodeStatIndicator,
+                            isConnected ? styles.nodeStatIndicatorConnected : styles.nodeStatIndicatorDisconnected
+                          ]}>
+                            <Text style={styles.nodeStatDot}>
+                              {isConnected ? '🟢' : '🔴'}
+                            </Text>
+                          </View>
+                          <Text style={[styles.nodeStatUrl, isDarkMode && styles.nodeStatUrlDark]}>
+                            {nodeStatus.url.replace('http://', '').replace('https://', '')}
+                            {isBest && ' ⭐'}
+                          </Text>
+                        </View>
+                        <Text style={[styles.nodeStatStatus, isDarkMode && styles.nodeStatStatusDark]}>
+                          {isConnected ? nodeStatus.state || 'SYNCED' : 'DISCONNECTED'}
+                        </Text>
+                      </View>
+
+                      {isConnected && (
+                        <>
+                          <View style={styles.statRow}>
+                            <Text style={[styles.statLabel, isDarkMode && styles.statLabelDark]}>
+                              Block Height:
+                            </Text>
+                            <Text style={[styles.statValue, isDarkMode && styles.statValueDark]}>
+                              {nodeStatus.height || 0}
+                            </Text>
+                          </View>
+                          <View style={styles.statRow}>
+                            <Text style={[styles.statLabel, isDarkMode && styles.statLabelDark]}>
+                              Peers:
+                            </Text>
+                            <Text style={[styles.statValue, isDarkMode && styles.statValueDark]}>
+                              {nodeStatus.peers || 0}
+                            </Text>
+                          </View>
+                          {nodeStatus.version && (
+                            <View style={styles.statRow}>
+                              <Text style={[styles.statLabel, isDarkMode && styles.statLabelDark]}>
+                                Version:
+                              </Text>
+                              <Text style={[styles.statValue, isDarkMode && styles.statValueDark]}>
+                                {nodeStatus.version}
+                              </Text>
+                            </View>
+                          )}
+                        </>
+                      )}
+                    </View>
+                  );
+                })
               )}
             </View>
           </ScrollView>
@@ -589,7 +875,7 @@ ${wallet.public_key}
               <Text style={[styles.closeButton, isDarkMode && styles.closeButtonDark]}>✕</Text>
             </TouchableOpacity>
           </View>
-          
+
           <ScrollView style={styles.modalContent}>
             {wallets.map((wallet, index) => (
               <View
@@ -621,10 +907,10 @@ ${wallet.public_key}
                 </TouchableOpacity>
               </View>
             ))}
-            
+
             {/* Create/Import Buttons */}
             <View style={styles.walletActions}>
-              <TouchableOpacity 
+              <TouchableOpacity
                 style={[styles.walletActionButton, styles.createButton]}
                 onPress={() => {
                   setWalletSwitcherVisible(false);
@@ -632,7 +918,7 @@ ${wallet.public_key}
                 }}>
                 <Text style={styles.walletActionText}>+ Create New Wallet</Text>
               </TouchableOpacity>
-              <TouchableOpacity 
+              <TouchableOpacity
                 style={[styles.walletActionButton, styles.importButton, isDarkMode && styles.importButtonDark]}
                 onPress={() => {
                   setWalletSwitcherVisible(false);
@@ -735,7 +1021,7 @@ function QuickActionButton({
 
 function TransactionItem({ transaction, isDarkMode }: { transaction: any; isDarkMode: boolean }) {
   const isReceived = transaction.type === 'receive';
-  
+
   return (
     <View style={[styles.txItem, isDarkMode && styles.txItemDark]}>
       <View style={styles.txIcon}>
@@ -771,6 +1057,93 @@ const styles = StyleSheet.create({
   centerContent: {
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  nodeStatusBar: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e0e0e0',
+  },
+  nodeStatusBarDark: {
+    borderBottomColor: '#263238',
+  },
+  nodeStatusBarConnected: {
+    backgroundColor: '#e8f5e9',
+  },
+  nodeStatusBarConnectedDark: {
+    backgroundColor: '#1b3a1f',
+  },
+  nodeStatusBarDisconnected: {
+    backgroundColor: '#ffebee',
+  },
+  nodeStatusBarDisconnectedDark: {
+    backgroundColor: '#3a1f1f',
+  },
+  nodeStatusContent: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  nodeStatusLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  nodeStatusIndicator: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  nodeStatusIndicatorConnected: {
+    backgroundColor: '#4caf50',
+  },
+  nodeStatusIndicatorDisconnected: {
+    backgroundColor: '#f44336',
+  },
+  nodeStatusIndicatorConnecting: {
+    backgroundColor: '#ff9800',
+  },
+  nodeStatusDot: {
+    fontSize: 16,
+  },
+  nodeStatusText: {
+    flex: 1,
+  },
+  nodeStatusTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#263238',
+    marginBottom: 2,
+  },
+  nodeStatusTitleDark: {
+    color: '#fff',
+  },
+  nodeStatusSubtitle: {
+    fontSize: 12,
+    color: '#546e7a',
+  },
+  nodeStatusSubtitleDark: {
+    color: '#90caf9',
+  },
+  nodeRefreshButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#fff',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#cfd8dc',
+  },
+  nodeRefreshButtonDark: {
+    backgroundColor: '#1a2332',
+    borderColor: '#263238',
+  },
+  nodeRefreshButtonText: {
+    fontSize: 18,
   },
   header: {
     flexDirection: 'row',
@@ -957,6 +1330,15 @@ const styles = StyleSheet.create({
   settingLabelDark: {
     color: '#fff',
   },
+  settingHint: {
+    fontSize: 12,
+    color: '#546e7a',
+    marginBottom: 8,
+    fontStyle: 'italic',
+  },
+  settingHintDark: {
+    color: '#90caf9',
+  },
   settingInput: {
     backgroundColor: '#fff',
     padding: 12,
@@ -982,6 +1364,165 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
+  },
+  addNodeContainer: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 8,
+  },
+  addNodeInput: {
+    flex: 1,
+  },
+  addNodeButton: {
+    backgroundColor: '#1565c0',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 8,
+    justifyContent: 'center',
+  },
+  addNodeButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  nodeItem: {
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 8,
+  },
+  nodeItemDark: {
+    backgroundColor: '#1a2332',
+    borderColor: '#263238',
+  },
+  nodeItemConnected: {
+    borderColor: '#4caf50',
+  },
+  nodeItemBest: {
+    borderColor: '#ff9800',
+    borderWidth: 2,
+  },
+  nodeItemContent: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  nodeItemLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  nodeItemIndicator: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  nodeItemIndicatorConnected: {
+    backgroundColor: '#e8f5e9',
+  },
+  nodeItemIndicatorDisconnected: {
+    backgroundColor: '#ffebee',
+  },
+  nodeItemDot: {
+    fontSize: 12,
+  },
+  nodeItemInfo: {
+    flex: 1,
+  },
+  nodeItemUrl: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#263238',
+    marginBottom: 2,
+  },
+  nodeItemUrlDark: {
+    color: '#fff',
+  },
+  nodeItemStatus: {
+    fontSize: 11,
+    color: '#546e7a',
+  },
+  nodeItemStatusDark: {
+    color: '#90caf9',
+  },
+  removeNodeButton: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#ffebee',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 8,
+  },
+  removeNodeButtonText: {
+    color: '#f44336',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  nodeStatusTextDark: {
+    color: '#90caf9',
+  },
+  nodeStatCard: {
+    paddingVertical: 12,
+  },
+  nodeStatCardDark: {
+    borderBottomColor: '#263238',
+  },
+  nodeStatCardBorder: {
+    borderBottomWidth: 1,
+    borderBottomColor: '#e0e0e0',
+    marginBottom: 12,
+    paddingBottom: 12,
+  },
+  nodeStatHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  nodeStatHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  nodeStatIndicator: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 8,
+  },
+  nodeStatIndicatorConnected: {
+    backgroundColor: '#e8f5e9',
+  },
+  nodeStatIndicatorDisconnected: {
+    backgroundColor: '#ffebee',
+  },
+  nodeStatDot: {
+    fontSize: 10,
+  },
+  nodeStatUrl: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#263238',
+    flex: 1,
+  },
+  nodeStatUrlDark: {
+    color: '#fff',
+  },
+  nodeStatStatus: {
+    fontSize: 11,
+    color: '#546e7a',
+    fontWeight: '500',
+  },
+  nodeStatStatusDark: {
+    color: '#90caf9',
   },
   statsCard: {
     backgroundColor: '#fff',

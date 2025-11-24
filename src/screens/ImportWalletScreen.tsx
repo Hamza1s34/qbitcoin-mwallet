@@ -32,14 +32,14 @@ export default function ImportWalletScreen({ navigation }: any) {
   const selectWalletFile = async () => {
     try {
       console.log('Opening document picker...');
-      
+
       // Pick a document using the new document picker
       const result = await pick({
         type: [types.allFiles],
       });
 
       console.log('Document picker result:', result);
-      
+
       if (!result || result.length === 0) {
         console.log('No file selected');
         return;
@@ -64,10 +64,10 @@ export default function ImportWalletScreen({ navigation }: any) {
 
       try {
         console.log('Reading file content from:', fileUri);
-        
+
         // Read file content using RNFS which properly handles content:// URIs on Android
         const text = await RNFS.readFile(fileUri, 'utf8');
-        
+
         console.log('File read successfully, length:', text.length);
 
         try {
@@ -98,7 +98,7 @@ export default function ImportWalletScreen({ navigation }: any) {
         console.log('User cancelled document picker');
         return;
       }
-      
+
       console.error('Document picker error:', err);
       Alert.alert('Error', 'Failed to open file picker: ' + (err?.message || 'Unknown error'));
     }
@@ -133,14 +133,14 @@ export default function ImportWalletScreen({ navigation }: any) {
       console.log('Verifying wallet password with Rust backend...');
       const walletJson = JSON.stringify(walletData);
       const verifyResult = await Falcon.verifyWalletPassword(walletJson, password);
-      
+
       if (!verifyResult.valid) {
         Alert.alert('Error', 'Incorrect password. Cannot decrypt wallet.');
         setPassword('');
         setLoading(false);
         return;
       }
-      
+
       console.log('✅ Password verified successfully');
 
       // Check if wallet name already exists
@@ -159,8 +159,8 @@ export default function ImportWalletScreen({ navigation }: any) {
               text: 'Import with New Name',
               onPress: async () => {
                 const newName = `${walletData.name}_imported_${Date.now()}`;
-                const modifiedWallet = { 
-                  ...walletData, 
+                const modifiedWallet = {
+                  ...walletData,
                   name: newName
                 };
                 await saveWallet(modifiedWallet);
@@ -184,15 +184,15 @@ export default function ImportWalletScreen({ navigation }: any) {
     try {
       // Save wallet
       await WalletStorage.saveWallet(wallet);
-      
+
       // Check if this is the first wallet (no active wallet set)
       const activeWallet = await WalletStorage.getActiveWallet();
       const allWallets = await WalletStorage.getAllWallets();
-      
+
       // If this is the first wallet or no active wallet, set it as active
       if (!activeWallet || allWallets.length === 1) {
         await WalletStorage.setActiveWallet(wallet.address);
-        
+
         Alert.alert(
           '✅ Success',
           `Wallet "${wallet.name}" imported successfully! This is now your active wallet.`,
@@ -206,7 +206,7 @@ export default function ImportWalletScreen({ navigation }: any) {
                 setPassword('');
                 setShowPasswordInput(false);
                 setLoading(false);
-                
+
                 // Navigate to MainApp (replace the entire navigation stack)
                 navigation.reset({
                   index: 0,
@@ -217,10 +217,12 @@ export default function ImportWalletScreen({ navigation }: any) {
           ]
         );
       } else {
-        // Not the first wallet, don't set as active
+        // Automatically switch to imported wallet
+        await WalletStorage.setActiveWallet(wallet.address);
+
         Alert.alert(
           '✅ Success',
-          `Wallet "${wallet.name}" imported successfully! You can switch to it from the dashboard settings.`,
+          `Wallet "${wallet.name}" imported successfully! Switched to this wallet.`,
           [
             {
               text: 'OK',
@@ -262,7 +264,7 @@ export default function ImportWalletScreen({ navigation }: any) {
         <Text style={[styles.fileCardTitle, isDarkMode && styles.fileCardTitleDark]}>
           📁 Wallet File
         </Text>
-        
+
         {selectedFile ? (
           <View style={styles.fileInfo}>
             <Text style={[styles.fileName, isDarkMode && styles.fileNameDark]}>
@@ -293,7 +295,7 @@ export default function ImportWalletScreen({ navigation }: any) {
           <Text style={[styles.infoCardTitle, isDarkMode && styles.infoCardTitleDark]}>
             Wallet Information
           </Text>
-          
+
           <View style={styles.infoRow}>
             <Text style={[styles.infoLabel, isDarkMode && styles.infoLabelDark]}>Name:</Text>
             <Text style={[styles.infoValue, isDarkMode && styles.infoValueDark]}>
